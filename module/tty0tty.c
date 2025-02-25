@@ -47,7 +47,6 @@
 #define DRIVER_AUTHOR "Luis Claudio Gamboa Lopes <lcgamboa@yahoo.com>"
 #define DRIVER_DESC "tty0tty null modem driver"
 
-#define SCULL_DEBUG 1
 #ifdef SCULL_DEBUG
 #define DEBUG_PRINTK(...) do { printk(__VA_ARGS__); } while (0)
 #else
