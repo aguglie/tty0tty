@@ -31,6 +31,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/wait.h>
+#include <linux/platform_device.h>
 #include <linux/tty.h>
 #include <linux/tty_driver.h>
 #include <linux/tty_flip.h>
@@ -83,6 +84,20 @@ MODULE_PARM_DESC(pairs,
 #define MSR_RI		0x80
 
 static struct tty_port *tport;
+static struct platform_device **tty0tty_pdevs;
+
+static int tty0tty_pdrv_probe(struct platform_device *pdev)
+{
+	return 0;
+}
+
+static struct platform_driver tty0tty_pdrv = {
+	.probe = tty0tty_pdrv_probe,
+	.driver = {
+		.name = "tty0tty",
+		.owner = THIS_MODULE,
+	},
+};
 
 struct tty0tty_serial {
 	struct tty_struct *tty;	/* pointer to the tty for this device */
@@ -701,12 +716,30 @@ static int __init tty0tty_init(void)
 	tport = kmalloc(2 * pairs * sizeof(struct tty_port), GFP_KERNEL);
 	tty0tty_table =
 	    kmalloc(2 * pairs * sizeof(struct tty0tty_serial *), GFP_KERNEL);
+	tty0tty_pdevs =
+	    kmalloc(2 * pairs * sizeof(struct platform_device *), GFP_KERNEL);
 
 	for (i = 0; i < 2 * pairs; i++) {
 		tty0tty_table[i] = NULL;
+		tty0tty_pdevs[i] = NULL;
 	}
 
 	DEBUG_PRINTK(KERN_DEBUG "%s - \n", __FUNCTION__);
+
+	/* Register platform driver for sysfs device/driver symlink */
+	retval = platform_driver_register(&tty0tty_pdrv);
+	if (retval) {
+		printk(KERN_ERR "tty0tty: platform_driver_register failed (%d)\n", retval);
+		return retval;
+	}
+
+	for (i = 0; i < 2 * pairs; i++) {
+		tty0tty_pdevs[i] = platform_device_register_simple("tty0tty", i, NULL, 0);
+		if (IS_ERR(tty0tty_pdevs[i])) {
+			printk(KERN_ERR "tty0tty: platform_device %d failed (%ld)\n", i, PTR_ERR(tty0tty_pdevs[i]));
+			tty0tty_pdevs[i] = NULL;
+		}
+	}
 
 	/* allocate the tty driver */
 	tty0tty_tty_driver = tty_alloc_driver(2 * pairs, 0);
@@ -716,14 +749,14 @@ static int __init tty0tty_init(void)
 	/* initialize the tty driver */
 	tty0tty_tty_driver->owner = THIS_MODULE;
 	tty0tty_tty_driver->driver_name = "tty0tty";
-	tty0tty_tty_driver->name = "tnt";
+	tty0tty_tty_driver->name = "ttyTNT";
 	/* no more devfs subsystem */
 	tty0tty_tty_driver->major = TTY0TTY_MAJOR;
 	tty0tty_tty_driver->minor_start = TTY0TTY_MINOR;
 	tty0tty_tty_driver->type = TTY_DRIVER_TYPE_SERIAL;
 	tty0tty_tty_driver->subtype = SERIAL_TYPE_NORMAL;
 	tty0tty_tty_driver->flags =
-	    TTY_DRIVER_RESET_TERMIOS | TTY_DRIVER_REAL_RAW;
+	    TTY_DRIVER_DYNAMIC_DEV | TTY_DRIVER_RESET_TERMIOS | TTY_DRIVER_REAL_RAW;
 	/* no more devfs subsystem */
 	tty0tty_tty_driver->init_termios = tty_std_termios;
 	tty0tty_tty_driver->init_termios.c_iflag = 0;
@@ -749,6 +782,16 @@ static int __init tty0tty_init(void)
 		return retval;
 	}
 
+	/* Register each tty device with platform parent */
+	for (i = 0; i < 2 * pairs; i++) {
+		struct device *parent = tty0tty_pdevs[i] ? &tty0tty_pdevs[i]->dev : NULL;
+		struct device *dev;
+
+		dev = tty_port_register_device(&tport[i], tty0tty_tty_driver, i, parent);
+		if (IS_ERR(dev))
+			printk(KERN_WARNING "tty0tty: tty device %d register failed (%ld)\n", i, PTR_ERR(dev));
+	}
+
 	printk(KERN_INFO DRIVER_DESC " " DRIVER_VERSION "\n");
 	return retval;
 }
@@ -768,6 +811,11 @@ static void __exit tty0tty_exit(void)
 	}
 	tty_unregister_driver(tty0tty_tty_driver);
 
+	for (i = 0; i < 2 * pairs; i++)
+		if (tty0tty_pdevs[i])
+			platform_device_unregister(tty0tty_pdevs[i]);
+	platform_driver_unregister(&tty0tty_pdrv);
+
 	/* shut down all of the timers and free the memory */
 	for (i = 0; i < 2 * pairs; ++i) {
 		tty0tty = tty0tty_table[i];
@@ -783,6 +831,7 @@ static void __exit tty0tty_exit(void)
 	}
 	kfree(tport);
 	kfree(tty0tty_table);
+	kfree(tty0tty_pdevs);
 }
 
 module_init(tty0tty_init);
